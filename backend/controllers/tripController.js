@@ -75,3 +75,144 @@ exports.deleteTrip = async (req, res) => {
     res.status(500).json({ message: 'Server error deleting trip' });
   }
 };
+
+// @desc    Update trip itinerary/hotels/budget (generic update)
+// @route   PUT /api/trips/:id
+exports.updateTrip = async (req, res) => {
+  try {
+    const trip = await Trip.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { $set: req.body },
+      { new: true }
+    );
+
+    if (!trip) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    res.status(200).json(trip);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error updating trip' });
+  }
+};
+
+// @desc    Add an activity to a specific day
+// @route   POST /api/trips/:id/activities
+exports.addActivity = async (req, res) => {
+  try {
+    const { dayNumber, title, description, estimatedCostUSD, timeOfDay } = req.body;
+
+    const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
+    if (!trip) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    const day = trip.itinerary.find((d) => d.dayNumber === dayNumber);
+    if (!day) {
+      return res.status(404).json({ message: `Day ${dayNumber} not found in itinerary` });
+    }
+
+    day.activities.push({ title, description, estimatedCostUSD: estimatedCostUSD || 0, timeOfDay: timeOfDay || 'Afternoon' });
+
+    await trip.save();
+    res.status(200).json(trip);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error adding activity' });
+  }
+};
+
+// @desc    Remove an activity from a specific day
+// @route   DELETE /api/trips/:id/activities/:activityId
+exports.removeActivity = async (req, res) => {
+  try {
+    const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
+    if (!trip) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    // Find which day contains this activity and remove it
+    let removed = false;
+    for (const day of trip.itinerary) {
+      const index = day.activities.findIndex(
+        (a) => a._id.toString() === req.params.activityId
+      );
+      if (index !== -1) {
+        day.activities.splice(index, 1);
+        removed = true;
+        break;
+      }
+    }
+
+    if (!removed) {
+      return res.status(404).json({ message: 'Activity not found' });
+    }
+
+    await trip.save();
+    res.status(200).json(trip);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error removing activity' });
+  }
+};
+
+// @desc    Regenerate a specific day with optional user instruction
+// @route   POST /api/trips/:id/regenerate-day
+exports.regenerateDay = async (req, res) => {
+  try {
+    const { dayNumber, instruction } = req.body;
+
+    const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
+    if (!trip) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    const apiKey = process.env.GROQ_API_KEY;
+    const prompt = `You are a travel planner. Regenerate Day ${dayNumber} of a ${trip.durationDays}-day trip to ${trip.destination}.
+Budget: ${trip.budgetTier}. Interests: ${trip.interests.join(', ')}.
+${instruction ? `Special instruction: ${instruction}` : ''}
+
+Respond with ONLY valid JSON matching exactly this structure:
+{
+  "activities": [
+    { "title": "string", "description": "string", "estimatedCostUSD": 20, "timeOfDay": "Morning" }
+  ]
+}
+Rules:
+- Generate 2-4 activities using only these timeOfDay values: "Morning", "Afternoon", "Evening"
+- Use realistic USD costs for a ${trip.budgetTier} budget traveler in ${trip.destination}
+- Do NOT repeat activities already in other days`;
+
+    const data = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+      }),
+    });
+
+    const result = await data.json();
+    const rawText = result.choices?.[0]?.message?.content;
+    if (!rawText) throw new Error('No content from AI');
+
+    const parsed = JSON.parse(rawText);
+
+    // Replace the specific day's activities
+    const day = trip.itinerary.find((d) => d.dayNumber === dayNumber);
+    if (!day) {
+      return res.status(404).json({ message: `Day ${dayNumber} not found` });
+    }
+
+    day.activities = parsed.activities;
+    await trip.save();
+
+    res.status(200).json(trip);
+  } catch (error) {
+    console.error('Regenerate day error:', error.message);
+    res.status(500).json({ message: 'Failed to regenerate day' });
+  }
+};

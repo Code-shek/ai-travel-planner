@@ -6,14 +6,21 @@ const {
   getUserTrips,
   getTripById,
   deleteTrip,
+  updateTrip,
+  addActivity,
+  removeActivity,
+  regenerateDay,
 } = require('../controllers/tripController');
 
-// Every route below requires a valid JWT
 router.use(auth);
 
 router.post('/', createTrip);
 router.get('/', getUserTrips);
 router.get('/:id', getTripById);
+router.put('/:id', updateTrip);
 router.delete('/:id', deleteTrip);
+router.post('/:id/activities', addActivity);
+router.delete('/:id/activities/:activityId', removeActivity);
+router.post('/:id/regenerate-day', regenerateDay);
 
 module.exports = router;
